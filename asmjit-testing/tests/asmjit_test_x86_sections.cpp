@@ -32,6 +32,30 @@ using namespace asmjit;
 // for verification that the function returns correct values.
 static const uint8_t data_array[] = { 2, 9, 4, 7, 1, 3, 8, 5, 6, 0 };
 
+// JitRuntime::add() must fail if the code references a label that was never bound, instead of
+// leaving a zero displacement in the code.
+static void test_add_with_unbound_label() {
+  printf("Verifying JitRuntime::add() with an unbound label:\n");
+
+  JitRuntime rt;
+  CodeHolder code;
+  code.init(rt.environment());
+
+  x86::Assembler a(&code);
+  Label unbound = a.new_label();
+  a.jmp(unbound);
+  a.ret();
+
+  void* fn;
+  Error err = rt.add(&fn, &code);
+  printf("  'JitRuntime::add()' returned '%s'\n\n", stringify_error(err));
+
+  if (err != Error::kInvalidLabel) {
+    printf("** FAILURE: Expected '%s' **\n", stringify_error(Error::kInvalidLabel));
+    exit(1);
+  }
+}
+
 static void fail(const char* message, Error err) {
   printf("** FAILURE: %s (%s) **\n", message, stringify_error(err));
   exit(1);
@@ -39,6 +63,8 @@ static void fail(const char* message, Error err) {
 
 int main() {
   printf("AsmJit X86 Sections Test\n\n");
+
+  test_add_with_unbound_label();
 
   Environment env = Environment::host();
   JitAllocator allocator;
