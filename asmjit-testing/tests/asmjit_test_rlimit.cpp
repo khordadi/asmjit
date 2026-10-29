@@ -81,10 +81,11 @@ static void invoke_void_function(void* ptr) noexcept {
   func();
 }
 
-static Error test_jit_runtime_function(size_t block_size, size_t extra_size, JitAllocatorOptions options = JitAllocatorOptions::kNone) noexcept {
+static Error test_jit_runtime_function(size_t block_size, size_t extra_size, const void* near_address = nullptr) noexcept {
   JitAllocator::CreateParams allocator_params{
-    .options = JitAllocatorOptions::kUseDualMapping | options,
-    .block_size = static_cast<uint32_t>(block_size)
+    .options = JitAllocatorOptions::kUseDualMapping,
+    .block_size = static_cast<uint32_t>(block_size),
+    .near_address = near_address
   };
 
   JitRuntime rt(&allocator_params);
@@ -188,13 +189,13 @@ int main() {
 
   // Placing blocks in an address range must respect the limit as well.
   printf("Testing the same within an address range\n");
-  if (test_jit_runtime_function(2 * MiB, 1 * MiB, JitAllocatorOptions::kNearModuleAddressRange) != result) {
+  if (test_jit_runtime_function(2 * MiB, 1 * MiB, (void*)invoke_void_function) != result) {
     printf("** FAILURE: The address range changed the result **\n");
     return 1;
   }
 
   printf("Testing JitRuntime with 256 KiB executable blocks within an address range\n");
-  if (test_jit_runtime_function(256 * 1024, 0, JitAllocatorOptions::kNearModuleAddressRange) != Error::kOk) {
+  if (test_jit_runtime_function(256 * 1024, 0, (void*)invoke_void_function) != Error::kOk) {
     printf("** FAILURE: Allocation within the limit failed **\n");
     return 1;
   }

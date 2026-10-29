@@ -368,6 +368,12 @@ static ASMJIT_INLINE_NODEBUG bool operator<(const uint8_t* a, const JitAllocator
 // JitAllocator - PrivateImpl
 // ==========================
 
+//! Address range `[start, end)` for executable memory.
+struct JitAllocatorAddressRange {
+  uintptr_t start;
+  uintptr_t end;
+};
+
 class JitAllocatorPrivateImpl : public JitAllocator::Impl {
 public:
   //! \name Members
@@ -379,9 +385,12 @@ public:
   uint32_t page_size;
   //! Number of active allocations.
   size_t allocation_count;
-  //! Address range for executable memory (no range if `address_range_end` is zero).
-  uintptr_t address_range_start;
-  uintptr_t address_range_end;
+  //! Address ranges for executable memory, in the order they are tried.
+  JitAllocatorAddressRange address_ranges[2];
+  //! Number of address ranges.
+  uint32_t address_range_count;
+  //! True if an address range was requested, even if none could be computed.
+  bool address_range_requested;
 
   //! Blocks from all pools in RBTree.
   axl::ArenaTree<JitAllocatorBlock> tree;
@@ -396,8 +405,9 @@ public:
     : JitAllocator::Impl {},
       page_size(0),
       allocation_count(0),
-      address_range_start(0),
-      address_range_end(0),
+      address_ranges{},
+      address_range_count(0),
+      address_range_requested(false),
       pools(pools),
       pool_count(pool_count) {}
   ASMJIT_INLINE ~JitAllocatorPrivateImpl() noexcept {}
@@ -409,31 +419,46 @@ static const JitAllocator::CreateParams JitAllocatorParams_none {};
 // JitAllocator - Utilities
 // ========================
 
-// Computes a range next to the module that contains AsmJit, from where a 32-bit displacement reaches the whole module.
-// It's below the module, because the `brk()` heap grows right above the executable, except on macOS, where the
-// executable's __PAGEZERO is below it.
-static void JitAllocator_near_module_address_range(uintptr_t* range_start, uintptr_t* range_end) noexcept {
+// Computes the ranges below and above the module that contains `addr` (or `addr` itself if it's not in a module), from
+// where a 32-bit displacement reaches the whole module. Returns the number of ranges, ordered as they should be tried.
+static uint32_t JitAllocator_near_address_ranges(const void* addr, JitAllocatorAddressRange* ranges) noexcept {
 #if ASMJIT_TARGET_ARCH_X86 == 64
   // 2GiB minus 64kB.
   constexpr uintptr_t kReach = 0x7FFF0000u;
+  // A lower bound that keeps the range above `vm.mmap_min_addr`.
+  constexpr uintptr_t kMinAddress = 0x100000u;
 
-  uintptr_t module_start;
-  uintptr_t module_end;
+  uintptr_t lo = uintptr_t(addr);
+  uintptr_t hi = lo + 1u;
 
-  if (VirtMem::module_address_range(&JitAllocatorImpl_none, &module_start, &module_end) == Error::kOk) {
-#if defined(__APPLE__)
-    *range_start = module_end;
-    *range_end = module_start + kReach;
-#else
-    // A lower bound that keeps the range above `vm.mmap_min_addr`.
-    constexpr uintptr_t kMinAddress = 0x100000u;
-
-    *range_start = module_end > kMinAddress + kReach ? module_end - kReach : kMinAddress;
-    *range_end = module_start;
-#endif
+  if (VirtMem::module_address_range(addr, &lo, &hi) != Error::kOk) {
+    lo = uintptr_t(addr);
+    hi = lo + 1u;
   }
+
+  if (hi - lo > kReach) {
+    return 0;
+  }
+
+  JitAllocatorAddressRange below { hi > kMinAddress + kReach ? hi - kReach : kMinAddress, lo };
+  JitAllocatorAddressRange above { hi, lo + kReach };
+
+#if defined(__APPLE__)
+  JitAllocatorAddressRange candidates[2] = { above, below };
 #else
-  axl::maybe_unused(range_start, range_end);
+  JitAllocatorAddressRange candidates[2] = { below, above };
+#endif
+
+  uint32_t count = 0;
+  for (const JitAllocatorAddressRange& range : candidates) {
+    if (range.start < range.end) {
+      ranges[count++] = range;
+    }
+  }
+  return count;
+#else
+  axl::maybe_unused(addr, ranges);
+  return 0;
 #endif
 }
 
@@ -497,11 +522,13 @@ static inline JitAllocatorPrivateImpl* JitAllocator_new_impl(const JitAllocator:
   impl->page_size = vm_info.page_size;
 
   if (params->address_range_end) {
-    impl->address_range_start = params->address_range_start;
-    impl->address_range_end = params->address_range_end;
+    impl->address_ranges[0] = JitAllocatorAddressRange{params->address_range_start, params->address_range_end};
+    impl->address_range_count = 1;
+    impl->address_range_requested = true;
   }
-  else if (axl::test(options, JitAllocatorOptions::kNearModuleAddressRange)) {
-    JitAllocator_near_module_address_range(&impl->address_range_start, &impl->address_range_end);
+  else if (params->near_address) {
+    impl->address_range_count = JitAllocator_near_address_ranges(params->near_address, impl->address_ranges);
+    impl->address_range_requested = true;
   }
 
   for (size_t pool_id = 0; pool_id < pool_count; pool_id++) {
@@ -607,19 +634,22 @@ static Error JitAllocator_alloc_virt_mem(const JitAllocatorPrivateImpl* impl, Vi
   bool dual_mapping = axl::test(impl->options, JitAllocatorOptions::kUseDualMapping);
   bool strict = axl::test(impl->options, JitAllocatorOptions::kStrictAddressRange);
 
-  if (impl->address_range_end) {
-    uintptr_t start = impl->address_range_start;
-    uintptr_t end = impl->address_range_end;
+  // No range can be computed from `near_address` on architectures other than X86_64.
+  Error err = Error::kFeatureNotEnabled;
 
-    Error err = dual_mapping ? VirtMem::alloc_dual_mapping(Out(vm), size, mem_flags, start, end)
-                             : VirtMem::alloc(&vm.rx, size, mem_flags, start, end);
-    if (err == Error::kOk || strict) {
+  for (uint32_t i = 0; i < impl->address_range_count; i++) {
+    uintptr_t start = impl->address_ranges[i].start;
+    uintptr_t end = impl->address_ranges[i].end;
+
+    err = dual_mapping ? VirtMem::alloc_dual_mapping(Out(vm), size, mem_flags, start, end)
+                       : VirtMem::alloc(&vm.rx, size, mem_flags, start, end);
+    if (err == Error::kOk) {
       return err;
     }
   }
-  else if (strict && axl::test(impl->options, JitAllocatorOptions::kNearModuleAddressRange)) {
-    // The near module address range is only computed on X86_64.
-    return make_error(Error::kFeatureNotEnabled);
+
+  if (strict && impl->address_range_requested) {
+    return make_error(err);
   }
 
   return dual_mapping ? VirtMem::alloc_dual_mapping(Out(vm), size, mem_flags)

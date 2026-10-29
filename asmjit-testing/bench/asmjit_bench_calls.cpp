@@ -35,7 +35,7 @@ static void print_app_info(size_t count) noexcept {
          "  - Call Sites - number of call sites in the generated function\n"
          "  - Code       - size of the generated function\n"
          "  - Default    - default placement, calls use 'call [rip + addrtab]'\n"
-         "  - Near       - JitAllocatorOptions::kNearModuleAddressRange, calls use\n"
+         "  - Near       - CreateParams::near_address set to a helper, calls use\n"
          "                 'call rel32' if the code could be placed near the module\n"
          "  - Direct     - number of call sites relocated to 'call rel32' (Near)\n"
          "\n"
@@ -151,7 +151,7 @@ int main(int argc, char* argv[]) {
   for (size_t call_count : call_counts) {
     JitAllocator::CreateParams default_params {};
     JitAllocator::CreateParams near_params {};
-    near_params.options = JitAllocatorOptions::kNearModuleAddressRange;
+    near_params.near_address = (void*)bench_helpers[0];
 
     BenchFunction default_func(default_params);
     BenchFunction near_func(near_params);

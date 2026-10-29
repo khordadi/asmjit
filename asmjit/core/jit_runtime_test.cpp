@@ -33,11 +33,12 @@ TEST_CASE(core_jit_runtime_near_calls) {
   using Func = int (ASMJIT_CDECL*)();
 
   JitAllocator::CreateParams params {};
-  params.options = JitAllocatorOptions::kNearModuleAddressRange | JitAllocatorOptions::kStrictAddressRange;
+  params.options = JitAllocatorOptions::kStrictAddressRange;
+  params.near_address = (void*)jit_runtime_test_callee;
 
   JitRuntime rt(&params);
   void* fn;
-  size_t call_offset;
+  size_t call_offset = 0;
   Error err = JitRuntimeTest_add_caller(rt, &fn, &call_offset);
 
   EXPECT_EQ(err, Error::kOk);

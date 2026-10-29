@@ -406,6 +406,11 @@ static bool JitAllocatorTest_in_range(const JitAllocator::Span& span, uintptr_t 
   return rx >= start && rx < end && end - rx >= span.size();
 }
 
+static bool JitAllocatorTest_within_reach(const JitAllocator::Span& span, uintptr_t addr) noexcept {
+  uintptr_t rx = uintptr_t(span.rx());
+  return axl::is_int_n<32>(int64_t(addr - rx)) && axl::is_int_n<32>(int64_t(addr - (rx + span.size())));
+}
+
 static void test_jit_allocator_address_range() noexcept {
   using Opt = JitAllocatorOptions;
 
@@ -487,26 +492,46 @@ static void test_jit_allocator_address_range() noexcept {
     EXPECT_EQ(VirtMem::release(taken, kSpanSize * 16u), Error::kOk);
   }
 
-  TEST_LOG("JitAllocator(kNearModuleAddressRange | kStrictAddressRange)");
+  TEST_LOG("JitAllocator(near_address, kStrictAddressRange)");
   {
+    // This function is in a module, all of which must be within reach of a 32-bit displacement.
+    uintptr_t fn = uintptr_t(&test_jit_allocator_address_range);
+
     JitAllocator::CreateParams params {};
-    params.options = Opt::kNearModuleAddressRange | Opt::kStrictAddressRange;
+    params.options = Opt::kStrictAddressRange;
+    params.near_address = (void*)fn;
 
     JitAllocator allocator(&params);
     JitAllocator::Span span;
     Error err = allocator.alloc(Out(span), kSpanSize);
 
 #if ASMJIT_TARGET_ARCH_X86 == 64
-    // This function is in the same module as AsmJit, so it must be within reach of a 32-bit displacement.
-    uintptr_t fn = uintptr_t(&test_jit_allocator_address_range);
     EXPECT_EQ(err, Error::kOk);
-    EXPECT_TRUE(axl::is_int_n<32>(int64_t(fn - uintptr_t(span.rx()))));
-    EXPECT_TRUE(axl::is_int_n<32>(int64_t(fn - (uintptr_t(span.rx()) + span.size()))));
+    EXPECT_TRUE(JitAllocatorTest_within_reach(span, fn));
     EXPECT_EQ(allocator.release(span.rx()), Error::kOk);
 #else
     EXPECT_EQ(err, Error::kFeatureNotEnabled);
 #endif
   }
+
+#if ASMJIT_TARGET_ARCH_X86 == 64 && !defined(__APPLE__)
+  TEST_LOG("JitAllocator(near_address without space below, kStrictAddressRange)");
+  {
+    // There is no space below this address (it's the lowest address considered), so the block must be placed above.
+    uintptr_t addr = 0x100000u;
+
+    JitAllocator::CreateParams params {};
+    params.options = Opt::kStrictAddressRange;
+    params.near_address = (void*)addr;
+
+    JitAllocator allocator(&params);
+    JitAllocator::Span span;
+    EXPECT_EQ(allocator.alloc(Out(span), kSpanSize), Error::kOk);
+    EXPECT_GT(uintptr_t(span.rx()), addr);
+    EXPECT_TRUE(JitAllocatorTest_within_reach(span, addr));
+    EXPECT_EQ(allocator.release(span.rx()), Error::kOk);
+  }
+#endif
 }
 
 TEST_CASE(core_jit_allocator) {
