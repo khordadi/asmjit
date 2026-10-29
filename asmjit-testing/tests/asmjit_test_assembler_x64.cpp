@@ -18018,6 +18018,16 @@ static void ASMJIT_NOINLINE test_x64_assembler_extra(AssemblerTester<x86::Assemb
   TEST_INSTRUCTION("0F01DF"                        , invlpga(rax, ecx));
 }
 
+// Without a base address a RIP-relative displacement cannot be calculated at emit time, so an
+// absolute address that fits into 32 bits must use [disp32] addressing, which needs no relocation.
+static void ASMJIT_NOINLINE test_x64_assembler_no_base_address(AssemblerTester<x86::Assembler>& tester) noexcept {
+  using namespace x86;
+
+  TEST_INSTRUCTION("8B042578563412"                , mov(eax, dword_ptr(0x12345678)));
+  TEST_INSTRUCTION("488B042578563412"              , mov(rax, qword_ptr(0x12345678)));
+  TEST_INSTRUCTION("030C2534120000"                , add(ecx, dword_ptr(0x1234)));
+}
+
 bool test_x64_assembler(const TestSettings& settings) noexcept {
   using namespace x86;
 
@@ -18046,6 +18056,9 @@ bool test_x64_assembler(const TestSettings& settings) noexcept {
   test_x64_assembler_avx512_llvm_4(tester);
   test_x64_assembler_amx(tester);
   test_x64_assembler_extra(tester);
+
+  tester.set_base_address(Globals::kNoBaseAddress);
+  test_x64_assembler_no_base_address(tester);
 
   tester.print_summary();
   return tester.did_pass();

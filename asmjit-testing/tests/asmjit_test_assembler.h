@@ -26,6 +26,7 @@ public:
 
   size_t passed {};
   size_t count {};
+  uint64_t base_address {};
 
   AssemblerTester(asmjit::Arch arch, const TestSettings& settings) noexcept
     : env(arch),
@@ -43,9 +44,14 @@ public:
 
   bool did_pass() const noexcept { return passed == count; }
 
+  void set_base_address(uint64_t value) noexcept {
+    base_address = value;
+    prepare();
+  }
+
   void prepare() noexcept {
     code.reset();
-    code.init(env, 0);
+    code.init(env, base_address);
     code.attach(&assembler);
     L0 = assembler.new_label();
 

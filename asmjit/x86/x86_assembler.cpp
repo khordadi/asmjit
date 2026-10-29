@@ -4106,7 +4106,7 @@ EmitModSib:
         // If relative addressing was not explicitly set then we can try to guess. By guessing we check some
         // properties of the memory operand and try to base the decision on the segment prefix and the address type.
         if (addr_type == Mem::AddrType::kDefault) {
-          if (EmitterUtils::is_absolute_location(base_address, section_offset)) {
+          if (!EmitterUtils::is_absolute_location(base_address, section_offset)) {
             // Prefer absolute addressing mode if the offset is 32-bit.
             addr_type = is_offset_int32 || is_offset_uint32 ? Mem::AddrType::kAbs : Mem::AddrType::kRel;
           }
